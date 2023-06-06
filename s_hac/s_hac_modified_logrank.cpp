@@ -1,6 +1,6 @@
 #include <vector>
 #include <boost/math/distributions.hpp>
-#include "modules/fast_logrank.cpp"
+#include "fast_logrank.cpp"
 
 
 std::pair<std::vector<double>, std::vector<char>> create_nn_survival_data(std::vector<double>& surv_t, std::vector<bool>& surv_e, int* neighbors, int n_neighbors, int inst_row){
