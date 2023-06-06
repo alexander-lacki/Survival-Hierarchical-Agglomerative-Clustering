@@ -1,0 +1,7 @@
+numpy==1.21.5
+scipy==1.7.3
+pandas==1.0.2
+lifelines==0.14.0
+matplotlib==3.2.0
+sklearn==0.0
+fastlogranktest==0.2.0
