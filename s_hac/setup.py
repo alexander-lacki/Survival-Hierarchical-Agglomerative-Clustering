@@ -5,7 +5,7 @@ from Cython.Build import cythonize
 extensions = [
     Extension("s_hac", ["./s_hac.pyx"]), 
     Extension("s_hac", ["./s_hac.cpp"]),
-    Extension("s_hac", ["./modules/fast_logrank.cpp"]),
+    Extension("s_hac", ["./fast_logrank.cpp"]),
 ]
 
 s = cythonize(extensions, language_level=3)
