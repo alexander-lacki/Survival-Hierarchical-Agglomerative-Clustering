@@ -1,4 +1,5 @@
 /*
+Copyright (c) 2023, Alexander Lacki
 Copyright (c) 2019, Andreas Stelzer
 All rights reserved.
 
@@ -28,7 +29,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-// The original code was modified to accomodate different function inputs
+// The original code was modified to accomodate different function inputs and filter out NaNs
 
 bool compareFunction(std::pair<double, char>& a, std::pair<double, char>& b)
 {

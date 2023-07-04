@@ -112,12 +112,11 @@ class SurvivalHierarchicalAgglomerativeClustering:
         self.alpha = alpha
         self.min_cluster_size = min_cluster_size
         self.logrank_p_threshold = logrank_p_threshold
-        self.distMx = None
         self.dist_mx = None
         self.processes = processes
         
         
-    def mytest(self, treat_a_list, treat_b_list):
+    def logrank_p(self, treat_a_list, treat_b_list):
         
         min_p = [1.0]
         
@@ -125,6 +124,9 @@ class SurvivalHierarchicalAgglomerativeClustering:
             treat_a = np.array(treat_a)
             treat_b = np.array(treat_b)
             
+            treat_a = treat_a[~np.isnan(treat_a[:, 0]), :]
+            treat_b = treat_b[~np.isnan(treat_b[:, 0]), :]
+
             p_val = logrank_test(treat_a[:, 0], 
                                  treat_b[:, 0], 
                                  treat_a[:, 1], 
@@ -142,10 +144,31 @@ class SurvivalHierarchicalAgglomerativeClustering:
                                         lifetimes[:, 1].astype(np.int8), 
                                         np.ascontiguousarray(np.array(pp).T).astype(np.int32), 
                                         neighbors.astype(np.int32))
+    
+
+    def compute_surv_distance_mx(self, lifetimes_array, neighbors, possible_pairs):
+        p = Pool(processes=self.processes)
+        surv_dists = p.starmap(self.pairwise_survival_generator, ((lifetimes_array, 
+                                                                  neighbors, 
+                                                                  pp) for pp in possible_pairs))
+        p.close()
+        p.join()
         
+        surv_dist = np.zeros((lifetimes_array.shape[0], lifetimes_array.shape[0]))
         
-    def compute_ss_distance_matrix(self, X, lifetimes_list, precomputed_distMx=None, subsample_idcs=None):
-        lifetimes_list = np.array(lifetimes_list[0])
+        for surv_dists_, pps in zip(surv_dists, possible_pairs):
+            for i in range(len(surv_dists_)):
+                surv_dist[pps[0, i], pps[1, i]] = surv_dists_[i]
+
+        # Fix Symmetry
+        surv_dist = np.maximum(surv_dist, surv_dist.T)
+        surv_dist[surv_dist==np.nan] = np.mean(surv_dist[surv_dist!=np.nan])
+
+        return surv_dist
+
+        
+    def compute_ss_distance_matrix(self, X, lifetimes_list, precomputed_distMx=None):
+        # lifetimes_list = np.array(lifetimes_list[0])
         
         if precomputed_distMx is None:
             knn = NearestNeighbors(n_neighbors=self.n_neighbors, metric='euclidean')
@@ -160,43 +183,21 @@ class SurvivalHierarchicalAgglomerativeClustering:
         possible_pairs = np.vstack(possible_pairs)
         possible_pairs = np.array_split(possible_pairs, self.processes, axis=1)
         
-        # Load or compute survival distances
-        surv_dist = np.zeros((X.shape[0], X.shape[0]))
-
-        # print("Computing pairwise survival distances.")
+        surv_dist_matrices = []
         
-        p = Pool(processes=self.processes)
-        surv_dists = p.starmap(self.pairwise_survival_generator, ((lifetimes_list, 
-                                                                  neighbors, 
-                                                                  pp) for pp in possible_pairs))
-        p.close()
-        p.join()
+        for lifetimes_array in lifetimes_list:
+            surv_dist_mx = self.compute_surv_distance_mx(lifetimes_array, neighbors, possible_pairs)
+            surv_dist_matrices.append(surv_dist_mx)
         
-        
-        for surv_dists_, pps in zip(surv_dists, possible_pairs):
-            for i in range(len(surv_dists_)):
-                surv_dist[pps[0, i], pps[1, i]] = surv_dists_[i]
-
-        # Fix Symmetry
-        surv_dist = np.maximum(surv_dist, surv_dist.T)
-        surv_dist[surv_dist==-1] = np.mean(surv_dist[surv_dist!=-1])
-        
-        if subsample_idcs is not None:
-            ix_ = np.ix_(subsample_idcs, subsample_idcs)
-            surv_dist = surv_dist[ix_]
-            self.surv_dist = surv_dist
-        
-        cov_dist = distance_matrix(X, X) if precomputed_distMx is None else precomputed_distMx
+        self.surv_dist = np.max(surv_dist_matrices, axis=0) if len(surv_dist_matrices) > 1 else surv_dist_matrices[0]
+        self.cov_dist = distance_matrix(X, X) if precomputed_distMx is None else precomputed_distMx
         
         # Standardize Distance Matrices
-        cov_dist /= np.mean(cov_dist)
-        surv_dist /= np.mean(surv_dist)
-        
-        self.surv_dist = surv_dist
-        self.cov_dist = cov_dist
-    
+        self.cov_dist /= np.mean(self.cov_dist)
+        self.surv_dist /= np.mean(self.surv_dist)
+            
         # Combine
-        comb_dmx = (1-self.alpha) * cov_dist + self.alpha * surv_dist
+        comb_dmx = (1-self.alpha) * self.cov_dist + self.alpha * self.surv_dist
         
         return comb_dmx
     
@@ -216,7 +217,7 @@ class SurvivalHierarchicalAgglomerativeClustering:
             n_on_agglomeration = linkage_matrix[i, -1]
 
             if clust_id_1 not in curr_clusts or clust_id_2 not in curr_clusts:
-                # No agglomeration possible. Agglomeration for one of the candidates was previously rejected?
+                # No agglomeration possible. Agglomeration for one of the candidates was previously rejected
                 # Consider agglomerating on children if minimum cluster size unreached
                 if clust_id_1 in curr_clusts or clust_id_2 in curr_clusts:
                     present_clust_id = clust_id_1 if clust_id_1 in curr_clusts else clust_id_2
@@ -228,16 +229,11 @@ class SurvivalHierarchicalAgglomerativeClustering:
 
                         cand_clusts = set(sub_clusts)
 
-                        ctr = 0
-
-                        while ctr < 250:
-                            # if sum([cand_clust in curr_clusts for cand_clust in cand_clusts]) >= 2:
+                        while True:
                             if any([cand_clust in curr_clusts for cand_clust in cand_clusts]):
-                                # print("Found current clust!")
                                 break
                             else:
                                 pass
-                                # print("Candidates ", cand_clusts, " not current.")
 
                             for cand_clust in cand_clusts.copy():
                                 if not cand_clust in curr_clusts:
@@ -250,8 +246,6 @@ class SurvivalHierarchicalAgglomerativeClustering:
                                     # print("Cluster ", old_a)
                                     cand_clusts.update(sub_clusts)
                                     cand_clusts.remove(cand_clust)
-
-                            ctr += 1
 
                         cand_clusts = [cand_clust for cand_clust in list(cand_clusts) if cand_clust in curr_clusts]
                         cand_idcs = [[p_id for p_id in curr_clusts[cand_clust]] for cand_clust in cand_clusts]
@@ -283,10 +277,8 @@ class SurvivalHierarchicalAgglomerativeClustering:
 
                 treats_1 = [[lifetimes[id_] for id_ in p_ids_1] for lifetimes in lifetimes_list]
                 treats_2 = [[lifetimes[id_] for id_ in p_ids_2] for lifetimes in lifetimes_list]
-
-                p_val = self.mytest(treats_1, treats_2)
                 
-                if p_val < self.logrank_p_threshold:
+                if self.logrank_p(treats_1, treats_2) < self.logrank_p_threshold:
                     # Do not agglomerate
                     continue
                 else:
@@ -440,7 +432,7 @@ class SurvivalHierarchicalAgglomerativeClustering:
                 treats_1 = [lifetimes[p_ids_1] for lifetimes in lifetimes_list]
                 treats_2 = [lifetimes[p_ids_2] for lifetimes in lifetimes_list]
 
-                p_val = self.mytest(treats_1, treats_2)
+                p_val = self.logrank_p(treats_1, treats_2)
             else:
                 p_val = 1.0
 
@@ -481,7 +473,7 @@ class SurvivalHierarchicalAgglomerativeClustering:
                 
             else:
                 # Rejecting Merge
-                # Set cannot-link contraint to non-singular clusters
+                # Set cannot-link contraints to non-singular clusters
                 C[condensed_indexer(c1, c2, N)] = True
                 
                 n = active_nodes.start_node
@@ -491,12 +483,9 @@ class SurvivalHierarchicalAgglomerativeClustering:
                         n = n.next
                         continue
                     if len(clust_dict[n.item]) > 1:
-                        # Prevent large-cluster merging
                         C[condensed_indexer(n.item, c1, N)] = True
                         C[condensed_indexer(n.item, c2, N)] = True
-                        
                     n = n.next
-        
         
         # Create cluster_assigment vector
         cluster_assigment = np.zeros(sum(map(len, clust_dict.values())))
@@ -507,12 +496,15 @@ class SurvivalHierarchicalAgglomerativeClustering:
         return cluster_assigment
     
     
-    def fit_predict(self, X, lifetimes, precomputed_distance=None, subsample_idcs=None):
+    def fit_predict(self, X, lifetimes, precomputed_distance=None):
         
         if self.dist_mx is None:
-            self.dist_mx = self.compute_ss_distance_matrix(X, lifetimes, precomputed_distance, subsample_idcs)
+            self.dist_mx = self.compute_ss_distance_matrix(X, lifetimes, precomputed_distance)
         
         init_clust_assignments, linkage_matrix = self.cluster(self.dist_mx, lifetimes, 8, X)
+        # print("No. clusts preclust:", np.unique(init_clust_assignments))
+        # print("postclust", flush=True)
         clust_assignments_2 = self.postprocess_clusters(X, lifetimes, init_clust_assignments, self.dist_mx)
         
         return clust_assignments_2.astype(int)
+
